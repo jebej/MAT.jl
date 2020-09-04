@@ -24,7 +24,7 @@
 
 module MAT
 
-using HDF5, SparseArrays
+using HDF5, Dates, SparseArrays
 
 include("MAT_HDF5.jl")
 include("MAT_v5.jl")

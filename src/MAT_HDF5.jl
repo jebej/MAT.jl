@@ -28,7 +28,7 @@
 
 module MAT_HDF5
 
-using HDF5, SparseArrays
+using HDF5, Dates, SparseArrays
 
 import Base: names, read, write, close
 import HDF5: Reference
@@ -51,6 +51,8 @@ mutable struct MatlabHDF5File <: HDF5.H5DataStore
         f
     end
 end
+
+include("MAT_HDF5_subsystem.jl")
 
 """
     close(matfile_handle)
@@ -116,6 +118,7 @@ const name_type_attr_matlab = "MATLAB_class"
 const empty_attr_matlab = "MATLAB_empty"
 const sparse_attr_matlab = "MATLAB_sparse"
 const int_decode_attr_matlab = "MATLAB_int_decode"
+const obj_decode_attr_matlab = "MATLAB_object_decode"
 
 ### Reading
 function read_complex(dtype::HDF5.Datatype, dset::HDF5.Dataset, ::Type{T}) where T
@@ -149,37 +152,38 @@ function m_read(dset::HDF5.Dataset)
 
     mattype = haskey(dset, name_type_attr_matlab) ? read_attribute(dset, name_type_attr_matlab) : "cell"
 
-    if mattype == "cell"
-        # Cell arrays, represented as an array of refs
-        refs = read(dset, Reference)
+    if mattype == "cell" # Cell arrays, represented as an array of refs
+        refs = read(dset, Array{HDF5ReferenceObj})
         out = Array{Any}(undef, size(refs))
         f = HDF5.file(dset)
         for i = 1:length(refs)
-            dset = f[refs[i]]
+            ds = f[refs[i]]
             try
-                out[i] = m_read(dset)
+                out[i] = m_read(ds)
             finally
-                close(dset)
+                close(ds)
             end
         end
         return out
-    elseif !haskey(str2type_matlab,mattype)
-        @warn "MATLAB $mattype values are currently not supported"
-        return missing
-    end
-
-    # Regular arrays of values
-    # Convert to Julia type
-    T = str2type_matlab[mattype]
-
-    # Check for a COMPOUND data set, and if so handle complex numbers specially
-    dtype = datatype(dset)
-    try
-        class_id = HDF5.h5t_get_class(dtype.id)
-        d = class_id == HDF5.H5T_COMPOUND ? read_complex(dtype, dset, T) : read(dset, T)
-        length(d) == 1 ? d[1] : d
-    finally
-        close(dtype)
+    elseif !haskey(str2type_matlab,mattype) # MATLAB opaque class
+        if mattype == "datetime"
+            return read(dset, Array{DateTime})
+        else
+            @warn "MATLAB $mattype class is currently not supported"
+            return missing
+        end
+    else # Regular arrays of values
+        # Convert to Julia type
+        T = str2type_matlab[mattype]
+        # Check for a COMPOUND data set, and if so handle complex numbers specially
+        dtype = datatype(dset)
+        return try
+            class_id = HDF5.h5t_get_class(dtype.id)
+            d = class_id == HDF5.H5T_COMPOUND ? read_complex(dtype, dset, T) : read(dset, T)
+            length(d) == 1 ? d[1] : d
+        finally
+            close(dtype)
+        end
     end
 end
 
@@ -595,6 +599,21 @@ function read(obj::Union{HDF5.Dataset,HDF5.Attribute}, ::Type{MatlabString})
     else
         return data
     end
+end
+
+function read(dset::HDF5.Dataset, ::Type{Array{DateTime}})
+    if HDF5.isnull(dset)
+        return DateTime[]
+    end
+    #
+    dat = read(dset)
+    @assert dat[1:4] == [0xdd000000, 0x00000002, 0x00000001, 0x00000001]
+    object_id = dat[5]
+    class_id = dat[6]
+    class, obj = read_opaque_obj(file(dset), object_id)
+    @assert class == "datetime"
+    replaceNaT = x -> ifelse(isnan(x), -6.21672192e10, x) # replace MATLAB NaT with DateTime(0)
+    return unix2datetime.(replaceNaT.(real.(obj["data"]).*1e-3))
 end
 
 ## Utilities for handling complex numbers
