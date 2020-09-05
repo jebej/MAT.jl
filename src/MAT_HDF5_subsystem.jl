@@ -5,11 +5,11 @@ read_opaque_subsystem(file::Union{MatlabHDF5File,HDF5File}) = process_mcos(read_
 read_subsystem_mcos(file::MatlabHDF5File) = read_subsystem_mcos(file.plain)
 
 function read_subsystem_mcos(file::HDF5File)
-    subsystem_group = file["#subsystem#"]
-    dset = subsystem_group["MCOS"]
+    subsystem_group = file["#subsystem#"]::HDF5Group
+    dset = subsystem_group["MCOS"]::HDF5Dataset
     @assert a_read(dset, name_type_attr_matlab) == "FileWrapper__"
     # FileWrapper__ class
-    refs = read(dset, Array{HDF5ReferenceObj})
+    refs = read(dset, Array{HDF5ReferenceObj})::Array{HDF5ReferenceObj,2}
     mcos = Vector{Any}(undef, length(refs))
     for i = 1:length(refs)
         ds = file[refs[i]]
@@ -25,7 +25,7 @@ function read_subsystem_mcos(file::HDF5File)
 end
 
 function process_mcos(mcos::Vector{Any})
-    fdata = IOBuffer(vec(mcos[1]))
+    fdata = IOBuffer(vec(mcos[1]::Array{UInt8,2}))
     segments, strs = parse_header(fdata)
     classes = parse_class_info(fdata,strs,segments[1],segments[2])
     seg2_props = parse_properties(fdata,strs,mcos,segments[2],segments[3])
@@ -37,7 +37,7 @@ function process_mcos(mcos::Vector{Any})
         # Get the property from either segment 2 or segment 4
         props = info[2] > 0 ? seg2_props[info[2]] : seg4_props[info[3]]
         # And merge it with the matfile defaults for this class
-        objs[i] = merge(mcos[end][info[1]+1],props)
+        objs[i] = merge(mcos[end][info[1]+1]::Dict{String,Any},props)
     end
     return map(x -> classes[x[1]][2],obj_info), objs
 end
@@ -173,28 +173,28 @@ end
 
 ####
 
-read_opaque_obj(file::MatlabHDF5File, obj_num::UInt32) = read_opaque_obj(file.plain, obj_num)
+read_opaque_obj(file::MatlabHDF5File, obj_num::Integer) = read_opaque_obj(file.plain, obj_num)
 
-function read_opaque_obj(file::HDF5File, obj_num::UInt32)
+function read_opaque_obj(file::HDF5File, obj_num::Integer)
     subsystem_group = file["#subsystem#"]::HDF5Group
     mcos_dset = subsystem_group["MCOS"]::HDF5Dataset
-    mcos_refs = read(mcos_dset, Array{HDF5ReferenceObj})
+    mcos_refs = read(mcos_dset, Array{HDF5ReferenceObj})::Array{HDF5ReferenceObj,2}
     close(mcos_dset)
     close(subsystem_group)
     #
     ds = file[mcos_refs[1]]
-    fdata = IOBuffer(vec(m_read(ds))::Vector{UInt8})
+    fdata = IOBuffer(vec(m_read(ds)::Array{UInt8,2}))
     close(ds)
     # get property info
     segments, strs = parse_header(fdata)
-    class_idx, seg1_idx, seg2_idx, obj_id = parse_object_info(fdata,obj_num,segments[3],segments[4])
+    class_idx, seg1_idx, seg2_idx, obj_id = parse_object_info(fdata,Int(obj_num),segments[3],segments[4])
     if seg1_idx > 0 # get data from 1st prop segment
         props = parse_properties(fdata,seg1_idx,segments[2],segments[3])
     else # get data from 2nd prop segment
         props = parse_properties(fdata,seg2_idx,segments[4],segments[5])
     end
     # extract data
-    data = sizehint!(Dict{String,Any}(),length(props))
+    data = Dict{String,Any}()
     for (name_idx, flag, heap_idx) in props
         if flag == 0 # This means that the property is stored in the strs array
             data[strs[name_idx]] = strs[heap_idx]
@@ -209,16 +209,16 @@ function read_opaque_obj(file::HDF5File, obj_num::UInt32)
             error("unknown flag ",flag," for property ",strs[name_idx]," with heap index ",heap_idx)
         end
     end
-    # merge with common props
+    # merge with common properties for this class
     ds = file[mcos_refs[end]]
-    data = merge(m_read(ds)[class_idx+1],data)
+    data = merge(m_read(ds)[class_idx+1]::Dict{String,Any},data)
     close(ds)
     # get class info
     package_idx, name_idx = parse_class_info(fdata,class_idx,segments[1],segments[2])
     return strs[name_idx], data
 end
 
-function parse_object_info(f::IO, obj_num::UInt32, seg_start::UInt32, seg_end::UInt32)
+function parse_object_info(f::IO, obj_num::Int, seg_start::UInt32, seg_end::UInt32)
     # seek to right position
     pos = seg_start + obj_num*6*4
     @assert pos < seg_end "invalid obj_num"
@@ -246,33 +246,28 @@ function parse_class_info(f::IO, idx::Int32, seg_start::UInt32, seg_end::UInt32)
     return package_idx, name_idx
 end
 
-
 function parse_properties(f::IO, idx::Int32, seg_start::UInt32, seg_end::UInt32)
+    # seek to start position
     seek(f,seg_start)
     read(f,Int32) == read(f,Int32) == 0 || error("unknown header for properties segment")
-    local prop
-    prop_idx = 1
-    while position(f) < seg_end
-        # For each class, there is first a Int32 describing the number of properties
+    # we neek to look at each set of props before the one we want to seek to the right position
+    for p = 1:(idx-1)
         nprops = read(f,Int32)
-        if prop_idx != idx
-            seek(f, ceil(Int,(position(f)+4*3*nprops)/8)*8)
-            prop_idx += 1
-            continue
-        else
-            prop = Vector{Tuple{Int32,Int32,Int32}}(undef,nprops)
-            for i = 1:nprops
-                # For each property, there is an index into our strings
-                name_idx = read(f,Int32)
-                # A flag describing how the heap_idx is to be interpreted
-                flag = read(f,Int32)
-                # And a value; often an index into some data structure
-                heap_idx = read(f,Int32)
-                # store
-                prop[i] = (name_idx, flag, heap_idx)
-            end
-            break
-        end
+        seek(f, ceil(Int,(position(f)+4*3*nprops)/8)*8)
+    end
+    @assert position(f) < seg_end "invalid property segment idx"
+    # now we are at the right position
+    nprops = read(f,Int32)
+    prop = Vector{Tuple{Int32,Int32,Int32}}(undef,nprops)
+    for i = 1:nprops
+        # For each property, there is an index into our strings
+        name_idx = read(f,Int32)
+        # A flag describing how the heap_idx is to be interpreted
+        flag = read(f,Int32)
+        # And a value; often an index into some data structure
+        heap_idx = read(f,Int32)
+        # store
+        prop[i] = (name_idx, flag, heap_idx)
     end
     return prop
 end
