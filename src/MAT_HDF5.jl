@@ -153,7 +153,7 @@ function m_read(dset::HDF5.Dataset)
     mattype = haskey(dset, name_type_attr_matlab) ? read_attribute(dset, name_type_attr_matlab) : "cell"
 
     if mattype == "cell" # Cell arrays, represented as an array of refs
-        refs = read(dset, Array{HDF5ReferenceObj})
+        refs = read(dset, Reference)
         out = Array{Any}(undef, size(refs))
         f = HDF5.file(dset)
         for i = 1:length(refs)
@@ -610,7 +610,7 @@ function read(dset::HDF5.Dataset, ::Type{Array{DateTime}})
     @assert dat[1:4] == [0xdd000000, 0x00000002, 0x00000001, 0x00000001]
     object_id = dat[5]
     class_id = dat[6]
-    class, obj = read_opaque_obj(file(dset), object_id)
+    class, obj = read_opaque_obj(HDF5.file(dset), object_id)
     @assert class == "datetime"
     replaceNaT = x -> ifelse(isnan(x), -6.21672192e10, x) # replace MATLAB NaT with DateTime(0)
     return unix2datetime.(replaceNaT.(real.(obj["data"]).*1e-3))

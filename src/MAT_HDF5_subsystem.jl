@@ -1,15 +1,15 @@
 using Printf
 
-read_opaque_subsystem(file::Union{MatlabHDF5File,HDF5File}) = process_mcos(read_subsystem_mcos(file))
+read_opaque_subsystem(file::Union{MatlabHDF5File,HDF5.File}) = process_mcos(read_subsystem_mcos(file))
 
 read_subsystem_mcos(file::MatlabHDF5File) = read_subsystem_mcos(file.plain)
 
-function read_subsystem_mcos(file::HDF5File)
-    subsystem_group = file["#subsystem#"]::HDF5Group
-    dset = subsystem_group["MCOS"]::HDF5Dataset
-    @assert a_read(dset, name_type_attr_matlab) == "FileWrapper__"
+function read_subsystem_mcos(file::HDF5.File)
+    subsystem_group = file["#subsystem#"]::HDF5.Group
+    dset = subsystem_group["MCOS"]::HDF5.Dataset
+    @assert read_attribute(dset, name_type_attr_matlab) == "FileWrapper__"
     # FileWrapper__ class
-    refs = read(dset, Array{HDF5ReferenceObj})::Array{HDF5ReferenceObj,2}
+    refs = read(dset, Reference)::Array{HDF5.Reference,2}
     mcos = Vector{Any}(undef, length(refs))
     for i = 1:length(refs)
         ds = file[refs[i]]
@@ -175,10 +175,10 @@ end
 
 read_opaque_obj(file::MatlabHDF5File, obj_num::Integer) = read_opaque_obj(file.plain, obj_num)
 
-function read_opaque_obj(file::HDF5File, obj_num::Integer)
-    subsystem_group = file["#subsystem#"]::HDF5Group
-    mcos_dset = subsystem_group["MCOS"]::HDF5Dataset
-    mcos_refs = read(mcos_dset, Array{HDF5ReferenceObj})::Array{HDF5ReferenceObj,2}
+function read_opaque_obj(file::HDF5.File, obj_num::Integer)
+    subsystem_group = file["#subsystem#"]::HDF5.Group
+    mcos_dset = subsystem_group["MCOS"]::HDF5.Dataset
+    mcos_refs = read(mcos_dset, Reference)::Array{HDF5.Reference,2}
     close(mcos_dset)
     close(subsystem_group)
     #
